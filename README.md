@@ -23,7 +23,11 @@ The hardware architecture is split into a low-voltage logical control unit and a
 * Edge Sensing & Processing:** Utilizing independent PZEM sensors and an ESP32-S3 microcontroller to acquire real-time voltage, current, and active power metrics across all three phases.
 * AI Decision Engine: Translating trained Decision Tree rules into lightweight cloud-integrated logic (`predictSystemState`) to evaluate phase voltage unbalance (V_{unbalance}) and current thresholds instantly.
 * Cloud Integration: Real-time data streaming and alert logging via Google Firebase Realtime Database, coupled with a responsive Web Dashboard supporting PWA installation.
+----
 
-!projet.png
+<p align="center">
+  <img src="project.png" alt="System Architecture" width="400">
+</p>
+
 ---
 © 2026 Eng. Mahmoud Souliman. All rights reserved.
