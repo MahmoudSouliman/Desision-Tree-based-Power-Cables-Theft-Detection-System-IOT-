@@ -16,7 +16,7 @@ This project introduces an intelligent, real-time monitoring and diagnostic syst
  2. System Architecture & Visual Diagram
 The hardware architecture is split into a low-voltage logical control unit and a high-voltage protection and coupling interface, communicating seamlessly via local wireless protocols and cloud databases.
 
-![System Architecture](block.png)
+![block.png]
 
 ---
 
