@@ -1,0 +1,105 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+#define SIGNAL_SPEED_M_US 200.0f
+
+#define PULSE_PIN    18
+#define CAPTURE_PIN  41
+#define POLARITY_PIN 42
+#define SSR_L1_PIN   15
+#define SSR_L2_PIN   16
+#define SSR_L3_PIN   17
+
+uint8_t masterMacAddress[] = {0x68, 0xEE, 0x8F, 0x4D, 0xCA, 0xC8};
+
+typedef struct struct_message {
+    float distance_L1;
+    bool fault_L1;
+    float distance_L2;
+    bool fault_L2;
+    float distance_L3;
+    bool fault_L3;
+} TdrPayload;
+
+TdrPayload tdrPayload;
+volatile unsigned long pulseStartTime = 0;
+volatile unsigned long pulseEndTime = 0;
+volatile bool echoCaptured = false;
+
+void IRAM_ATTR onEchoReceived() {
+    pulseEndTime = micros();
+    echoCaptured = true;
+}
+
+float scanPhase(uint8_t ssrPin, bool &faultFlag) {
+    faultFlag = false;
+    echoCaptured = false;
+    float calculatedDistance = 0.0f;
+
+    digitalWrite(ssrPin, HIGH);
+    delayMicroseconds(100);
+
+    pulseStartTime = micros();
+    digitalWrite(PULSE_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(PULSE_PIN, LOW);
+
+    unsigned long waitStart = micros();
+    while (!echoCaptured && (micros() - waitStart < 500)) {
+        // انتظار مقاطعة الارتداد
+    }
+
+    digitalWrite(ssrPin, LOW);
+
+    if (echoCaptured && (pulseEndTime > pulseStartTime)) {
+        unsigned long travelTime = pulseEndTime - pulseStartTime;
+        calculatedDistance = (travelTime * SIGNAL_SPEED_M_US) / 2.0f;
+        faultFlag = true;
+    }
+
+    return calculatedDistance;
+}
+
+void setup() {
+    pinMode(PULSE_PIN, OUTPUT);
+    digitalWrite(PULSE_PIN, LOW);
+
+    pinMode(CAPTURE_PIN, INPUT_PULLUP);
+    pinMode(POLARITY_PIN, INPUT);
+
+    pinMode(SSR_L1_PIN, OUTPUT);
+    pinMode(SSR_L2_PIN, OUTPUT);
+    pinMode(SSR_L3_PIN, OUTPUT);
+
+    digitalWrite(SSR_L1_PIN, LOW);
+    digitalWrite(SSR_L2_PIN, LOW);
+    digitalWrite(SSR_L3_PIN, LOW);
+
+    attachInterrupt(digitalPinToInterrupt(CAPTURE_PIN), onEchoReceived, FALLING);
+
+    WiFi.mode(WIFI_STA);
+    if (esp_now_init() != ESP_OK) {
+        return;
+    }
+
+    esp_now_peer_info_t peerInfo = {};
+    memcpy(peerInfo.peer_addr, masterMacAddress, 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+
+    esp_now_add_peer(&peerInfo);
+}
+
+void loop() {
+    tdrPayload.distance_L1 = scanPhase(SSR_L1_PIN, tdrPayload.fault_L1);
+    delay(50);
+
+    tdrPayload.distance_L2 = scanPhase(SSR_L2_PIN, tdrPayload.fault_L2);
+    delay(50);
+
+    tdrPayload.distance_L3 = scanPhase(SSR_L3_PIN, tdrPayload.fault_L3);
+
+    esp_now_send(masterMacAddress, (uint8_t *)&tdrPayload, sizeof(tdrPayload));
+
+    delay(1000);
+}
