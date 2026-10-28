@@ -1,0 +1,201 @@
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Wire.h>
+#include <FirebaseESP32.h>
+#include <PZEM004Tv30.h>
+#include <LiquidCrystal_I2C.h>
+
+#define WIFI_SSID     "SSID"
+#define WIFI_PASSWORD "Network Password"
+#define FIREBASE_HOST "RealTime Database Link"
+#define FIREBASE_AUTH "Authentication code"
+
+#define PZEM_RX_PIN   41
+#define PZEM_TX_PIN   42
+#define I2C_SDA       8
+#define I2C_SCL       9
+#define BUZZER_PIN    4
+#define LED_RED_PIN   5
+#define LED_GREEN_PIN 6
+
+// عتبات تشغيل الـ TDR الذكية
+#define VOLTAGE_OUTAGE_THRESHOLD 20.0f    // أقل من 20 فولط يعتبر انقطاعاً
+#define OUTAGE_HOLD_TIME_MS      60000UL  // انتظار مرور 60 ثانية على الانقطاع
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+PZEM004Tv30 pzem1(Serial2, PZEM_RX_PIN, PZEM_TX_PIN, 0x01);
+PZEM004Tv30 pzem2(Serial2, PZEM_RX_PIN, PZEM_TX_PIN, 0x02);
+PZEM004Tv30 pzem3(Serial2, PZEM_RX_PIN, PZEM_TX_PIN, 0x03);
+
+FirebaseData firebaseData;
+FirebaseAuth auth;
+FirebaseConfig config;
+FirebaseJson json;
+
+typedef struct struct_message {
+    float distance_L1;
+    bool fault_L1;
+    float distance_L2;
+    bool fault_L2;
+    float distance_L3;
+    bool fault_L3;
+} TdrPayload;
+
+TdrPayload rawTdr = {0.0f, false, 0.0f, false, 0.0f, false};
+volatile unsigned long packetCount = 0;
+
+// مؤقتات تتبع زمن انقطاع كل طور
+unsigned long outageStart_L1 = 0;
+unsigned long outageStart_L2 = 0;
+unsigned long outageStart_L3 = 0;
+
+void OnDataRecv(const esp_now_recv_info *info, const uint8_t *incomingData, int len) {
+    if (len == sizeof(TdrPayload)) {
+        memcpy(&rawTdr, incomingData, sizeof(TdrPayload));
+        packetCount++;
+    }
+}
+
+inline void readPhase(PZEM004Tv30 &pzem, float &v, float &i, float &p) {
+    v = pzem.voltage();
+    if (isnan(v)) {
+        v = 0.0f; i = 0.0f; p = 0.0f;
+    } else {
+        i = pzem.current();
+        p = pzem.power();
+        if (isnan(i)) i = 0.0f;
+        if (isnan(p)) p = 0.0f;
+    }
+}
+
+void setup() {
+    pinMode(BUZZER_PIN, OUTPUT);
+    pinMode(LED_RED_PIN, OUTPUT);
+    pinMode(LED_GREEN_PIN, OUTPUT);
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(LED_RED_PIN, LOW);
+    digitalWrite(LED_GREEN_PIN, LOW);
+
+    Wire.begin(I2C_SDA, I2C_SCL);
+    lcd.init();
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("Connecting WiFi");
+
+    WiFi.persistent(false);
+    WiFi.disconnect(true, true);
+    delay(200);
+
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+    uint8_t wifiTimeout = 0;
+    while (WiFi.status() != WL_CONNECTED && wifiTimeout < 20) {
+        delay(500);
+        wifiTimeout++;
+    }
+
+    if (esp_now_init() == ESP_OK) {
+        esp_now_register_recv_cb(OnDataRecv);
+    }
+
+    config.host = FIREBASE_HOST;
+    config.database_url = FIREBASE_HOST;
+    config.signer.tokens.legacy_token = FIREBASE_AUTH;
+    config.timeout.serverResponse = 5000;
+    Firebase.begin(&config, &auth);
+    Firebase.reconnectWiFi(true);
+
+    digitalWrite(LED_GREEN_PIN, HIGH);
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Status: STREAMING");
+}
+
+void loop() {
+    static unsigned long lastStreamTime = 0;
+    if (millis() - lastStreamTime >= 2000) {
+        lastStreamTime = millis();
+        unsigned long now = millis();
+
+        float v1, i1, p1, v2, i2, p2, v3, i3, p3;
+        readPhase(pzem1, v1, i1, p1);
+        readPhase(pzem2, v2, i2, p2);
+        readPhase(pzem3, v3, i3, p3);
+
+        // --- معالجة شرط تفعيل TDR للطور الأول L1 ---
+        float finalDist_L1 = 0.0f;
+        bool finalFault_L1 = false;
+        if (v1 < VOLTAGE_OUTAGE_THRESHOLD) {
+            if (outageStart_L1 == 0) outageStart_L1 = now;
+            if (now - outageStart_L1 >= OUTAGE_HOLD_TIME_MS) {
+                finalDist_L1 = (rawTdr.distance_L1 > 15.0f) ? rawTdr.distance_L1 : 0.0f;
+                finalFault_L1 = rawTdr.fault_L1;
+            }
+        } else {
+            outageStart_L1 = 0;
+        }
+
+        // --- معالجة شرط تفعيل TDR للطور الثاني L2 ---
+        float finalDist_L2 = 0.0f;
+        bool finalFault_L2 = false;
+        if (v2 < VOLTAGE_OUTAGE_THRESHOLD) {
+            if (outageStart_L2 == 0) outageStart_L2 = now;
+            if (now - outageStart_L2 >= OUTAGE_HOLD_TIME_MS) {
+                finalDist_L2 = (rawTdr.distance_L2 > 15.0f) ? rawTdr.distance_L2 : 0.0f;
+                finalFault_L2 = rawTdr.fault_L2;
+            }
+        } else {
+            outageStart_L2 = 0;
+        }
+
+        // --- معالجة شرط تفعيل TDR للطور الثالث L3 ---
+        float finalDist_L3 = 0.0f;
+        bool finalFault_L3 = false;
+        if (v3 < VOLTAGE_OUTAGE_THRESHOLD) {
+            if (outageStart_L3 == 0) outageStart_L3 = now;
+            if (now - outageStart_L3 >= OUTAGE_HOLD_TIME_MS) {
+                finalDist_L3 = (rawTdr.distance_L3 > 15.0f) ? rawTdr.distance_L3 : 0.0f;
+                finalFault_L3 = rawTdr.fault_L3;
+            }
+        } else {
+            outageStart_L3 = 0;
+        }
+
+        // تحديث شاشة LCD
+        char lcdBuf[17];
+        snprintf(lcdBuf, sizeof(lcdBuf), "P:%lu S:%ddB   ", packetCount, WiFi.RSSI());
+        lcd.setCursor(0, 1);
+        lcd.print(lcdBuf);
+
+        // الإرسال السحابي
+        if (Firebase.ready()) {
+            json.clear();
+            json.set("L1/voltage", v1);
+            json.set("L1/current", i1);
+            json.set("L1/power", p1);
+            json.set("L1/tdr_dist", finalDist_L1);
+            json.set("L1/tdr_fault", finalFault_L1);
+
+            json.set("L2/voltage", v2);
+            json.set("L2/current", i2);
+            json.set("L2/power", p2);
+            json.set("L2/tdr_dist", finalDist_L2);
+            json.set("L2/tdr_fault", finalFault_L2);
+
+            json.set("L3/voltage", v3);
+            json.set("L3/current", i3);
+            json.set("L3/power", p3);
+            json.set("L3/tdr_dist", finalDist_L3);
+            json.set("L3/tdr_fault", finalFault_L3);
+
+            json.set("sys/packets", packetCount);
+            json.set("sys/rssi", WiFi.RSSI());
+            json.set("sys/timestamp", now);
+
+            Firebase.updateNode(firebaseData, "/RawTelemetry", json);
+        }
+    }
+}
