@@ -24,5 +24,6 @@ The hardware architecture is split into a low-voltage logical control unit and a
 * AI Decision Engine: Translating trained Decision Tree rules into lightweight cloud-integrated logic (`predictSystemState`) to evaluate phase voltage unbalance (V_{unbalance}) and current thresholds instantly.
 * Cloud Integration: Real-time data streaming and alert logging via Google Firebase Realtime Database, coupled with a responsive Web Dashboard supporting PWA installation.
 
+![Me & My Project](projet.png)
 ---
 © 2026 Eng. Mahmoud Souliman. All rights reserved.
